@@ -184,8 +184,10 @@ export function createBot(): Bot {
     }
   });
 
+  // Log only the message string; never log err or err.ctx (contains user/chat/message).
   bot.catch((err) => {
-    console.error("Bot error:", err.message);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("Bot error:", msg);
   });
 
   return bot;
