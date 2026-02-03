@@ -1,0 +1,7 @@
+.env
+node_modules/
+data/photos/
+.claude/
+.cursor/
+claude.md
+PLAN.md

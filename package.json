@@ -1,0 +1,21 @@
+{
+  "name": "name-search",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "import": "bun run src/importer.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "grammy": "^1.39.3",
+    "meilisearch": "^0.55.0",
+    "mongodb": "^7.0.0"
+  }
+}
