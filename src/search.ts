@@ -25,16 +25,24 @@ export async function searchAll(
   const meili = getMeiliClient();
   const index = meili.index(VICTIMS_INDEX);
   const searchQuery = normalizeForSearch(q);
-  const resp = await index.search(searchQuery, {
-    limit,
-    offset: skip,
+  // First search: get all matching IDs (with threshold applied) to get accurate total
+  // For a small dataset (~2000 records), this is efficient
+  const MAX_RESULTS = 1000;
+  const allResp = await index.search(searchQuery, {
+    limit: MAX_RESULTS,
+    offset: 0,
     attributesToRetrieve: ["messageId"],
     matchingStrategy: "all",
     rankingScoreThreshold: 0.6,
   });
 
-  const total = resp.estimatedTotalHits ?? 0;
-  const messageIds = (resp.hits as { id?: string; messageId?: number }[]).map(
+  const allHits = allResp.hits as { id?: string; messageId?: number }[];
+  const total = allHits.length; // Actual count after threshold
+  if (total === 0) return { results: [], total: 0 };
+
+  // Slice for requested page
+  const pageHits = allHits.slice(skip, skip + limit);
+  const messageIds = pageHits.map(
     (h) => (h.messageId != null ? h.messageId : Number(h.id))
   );
   if (messageIds.length === 0) return { results: [], total };
