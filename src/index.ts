@@ -1,7 +1,7 @@
 import { connectDb, closeDb } from "./db";
 import { createBot } from "./bot";
 import { startWatcher } from "./watcher";
-import { importData } from "./importer";
+import { importData, syncToMeilisearch } from "./importer";
 
 let bot: ReturnType<typeof createBot> | null = null;
 
@@ -16,6 +16,10 @@ async function main() {
   // Auto-import data on startup
   const { imported, skipped, existing } = await importData();
   console.log(`Import done: ${imported} new, ${existing} existing, ${skipped} skipped`);
+
+  // Sync MongoDB to Meilisearch (in case Meilisearch was reset)
+  const synced = await syncToMeilisearch();
+  if (synced > 0) console.log(`Synced ${synced} records to Meilisearch`);
 
   bot = createBot();
   await bot.api.setMyCommands(BOT_COMMANDS);

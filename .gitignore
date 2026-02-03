@@ -1,6 +1,6 @@
 .env
 node_modules/
-data/photos/
+data/photos/part
 .claude/
 .cursor/
 claude.md

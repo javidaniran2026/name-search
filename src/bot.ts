@@ -11,12 +11,13 @@ import { randomBytes } from "crypto";
 import { searchAll, PAGE_SIZE } from "./search";
 import type { VictimRecord } from "./importer";
 import {
-  parseForwardCaption,
   getForwardMessageId,
   downloadPhotoAndSave,
   upsertForwardedVictim,
   buildVictimRecord,
 } from "./forward";
+import { extractName } from "./importer";
+import { getStats } from "./db";
 
 const DATA_DIR = join(import.meta.dir, "..", "data");
 const SESSION_TTL_MS = 60 * 60 * 1000;
@@ -85,13 +86,16 @@ const messages = {
   adminOnly: `این دستور فقط برای ادمین بات است.`,
   forwardSuccess: `اضافه شد.`,
   forwardInvalid: `متن یا عکس نامعتبر است.`,
+  stats: (records: number, withPhoto: number) =>
+    `📊 آمار\nتعداد رکوردها: ${records.toLocaleString("fa-IR")}\nتعداد با عکس: ${withPhoto.toLocaleString("fa-IR")}`,
 };
 
+const MAX_CAPTION_LENGTH = 1020; // Telegram limit 1024, leave room for "۱. "
+
 function formatCaption(r: VictimRecord): string {
-  const parts = [r.name];
-  if (r.date) parts.push(r.date);
-  if (r.location) parts.push(r.location);
-  return parts.join("\n");
+  const caption = r.caption;
+  if (caption.length <= MAX_CAPTION_LENGTH) return caption;
+  return caption.slice(0, MAX_CAPTION_LENGTH - 3) + "...";
 }
 
 export function createBot(): Bot {
@@ -105,6 +109,20 @@ export function createBot(): Bot {
 
   bot.command("start", (ctx) => ctx.reply(messages.welcome));
   bot.command("help", (ctx) => ctx.reply(messages.help));
+
+  bot.command("stats", async (ctx) => {
+    const adminId = process.env.ADMIN_ID ? Number(process.env.ADMIN_ID) : 0;
+    if (!adminId || ctx.from?.id !== adminId) {
+      await ctx.reply(messages.adminOnly).catch(() => {});
+      return;
+    }
+    try {
+      const { records, withPhoto } = await getStats();
+      await ctx.reply(messages.stats(records, withPhoto)).catch(() => {});
+    } catch {
+      await ctx.reply(messages.error).catch(() => {});
+    }
+  });
 
   bot.on("message:text", async (ctx) => {
     const query = ctx.message.text.trim();
@@ -120,8 +138,8 @@ export function createBot(): Bot {
       await ctx.reply(messages.adminOnly).catch(() => {});
       return;
     }
-    const parsed = parseForwardCaption(msg.caption);
-    if (!parsed) {
+    const caption = msg.caption.replace(/@\w+/g, "").trim();
+    if (!extractName(caption)) {
       await ctx.reply(messages.forwardInvalid).catch(() => {});
       return;
     }
@@ -134,14 +152,7 @@ export function createBot(): Bot {
         return;
       }
       const photoPath = await downloadPhotoAndSave(ctx.api, largest.file_id, messageId);
-      const record = buildVictimRecord(
-        messageId,
-        parsed.name,
-        parsed.date,
-        parsed.location,
-        photoPath,
-        msg.caption
-      );
+      const record = buildVictimRecord(messageId, caption, photoPath);
       await upsertForwardedVictim(record);
       await ctx.reply(messages.forwardSuccess).catch(() => {});
     } catch {
@@ -220,10 +231,13 @@ async function sendPage(
       .map((d) => persianDigits[parseInt(d, 10)])
       .join("");
 
+  const formatResultCaption = (num: number, caption: string) =>
+    `${toPersianNum(num)} -\n${caption}`;
+
   if (withPhoto.length >= 2) {
     const media = withPhoto.map((r, i) =>
       InputMediaBuilder.photo(new InputFile(join(DATA_DIR, r.photoPath)), {
-        caption: `${toPersianNum(skip + i + 1)}. ${formatCaption(r)}`,
+        caption: formatResultCaption(skip + i + 1, formatCaption(r)),
       })
     );
     await api.sendMediaGroup(chatId, media);
@@ -231,7 +245,7 @@ async function sendPage(
     const r = withPhoto[0];
     if (r) {
       await api.sendPhoto(chatId, new InputFile(join(DATA_DIR, r.photoPath)), {
-        caption: `${toPersianNum(skip + 1)}. ${formatCaption(r)}`,
+        caption: formatResultCaption(skip + 1, formatCaption(r)),
       });
     }
   }
@@ -239,7 +253,7 @@ async function sendPage(
   if (withoutPhoto.length > 0) {
     const startNum = skip + withPhoto.length + 1;
     const text = withoutPhoto
-      .map((r, i) => `${toPersianNum(startNum + i)}. ${formatCaption(r)}`)
+      .map((r, i) => formatResultCaption(startNum + i, formatCaption(r)))
       .join("\n\n");
     await api.sendMessage(chatId, text);
   }

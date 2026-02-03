@@ -20,8 +20,20 @@ export async function closeDb(): Promise<void> {
 
 export async function ensureIndexes(db: Db): Promise<void> {
   const coll = db.collection("victims");
-  await coll.createIndex({ normalizedName: 1 });
-  await coll.createIndex({ normalizedLocation: 1 });
-  await coll.createIndex({ date: 1 });
   await coll.createIndex({ messageId: 1 }, { unique: true });
+}
+
+export interface DbStats {
+  records: number;
+  withPhoto: number;
+}
+
+export async function getStats(): Promise<DbStats> {
+  const db = await connectDb();
+  const coll = db.collection("victims");
+  const [records, withPhoto] = await Promise.all([
+    coll.countDocuments(),
+    coll.countDocuments({ photoPath: { $exists: true, $ne: "" } }),
+  ]);
+  return { records, withPhoto };
 }

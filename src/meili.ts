@@ -20,17 +20,16 @@ export const VICTIMS_INDEX = "victims";
 export interface MeiliVictimDoc {
   messageId: number;
   name: string;
-  location: string;
-  date: string;
+  caption: string;
 }
 
 export async function ensureMeiliIndex(): Promise<void> {
   const meili = getMeiliClient();
   const index = meili.index(VICTIMS_INDEX);
-  await index.updateSearchableAttributes(["name", "location", "date"]);
+  await index.updateSearchableAttributes(["name", "caption"]);
   await index.updateTypoTolerance({
     enabled: true,
-    minWordSizeForTypos: { oneTypo: 2, twoTypos: 4 },
+    minWordSizeForTypos: { oneTypo: 3, twoTypos: 6 },
   });
 }
 

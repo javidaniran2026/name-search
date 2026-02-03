@@ -2,7 +2,7 @@ import { readFile, access } from "fs/promises";
 import { join } from "path";
 import { connectDb, ensureIndexes } from "./db";
 import { ensureMeiliIndex, indexVictims, type MeiliVictimDoc } from "./meili";
-import { normalize, normalizeForSearch } from "./normalizer";
+import { normalizeForSearch } from "./normalizer";
 
 const DATA_DIR = join(import.meta.dir, "..", "data");
 const RESULT_JSON = join(DATA_DIR, "result.json");
@@ -19,12 +19,8 @@ async function fileExists(path: string): Promise<boolean> {
 export interface VictimRecord {
   messageId: number;
   name: string;
-  normalizedName: string;
-  date: string;
-  location: string;
-  normalizedLocation: string;
+  caption: string;
   photoPath: string;
-  originalText: string;
   createdAt: Date;
 }
 
@@ -38,44 +34,44 @@ function extractPlainText(text: string | TextPart[] | undefined): string {
     .join("");
 }
 
-const PERSIAN_MONTHS =
-  "فروردین|اردیبهشت|خرداد|تیر|مرداد|شهریور|مهر|آبان|آذر|دی|بهمن|اسفند";
-const DATE_REGEX = new RegExp(
-  `([۰-۹0-9]+\\s+${PERSIAN_MONTHS}\\s+[۰-۹0-9]+)`,
-  "u"
-);
+export function extractName(caption: string): string {
+  const firstLine = caption.split("\n")[0]?.trim() ?? "";
+  // Strip leading number + optional dot + optional space (handles both "۱۷۰۹. نام" and "۱۷۰۹ نام")
+  return firstLine.replace(/^[۰-۹0-9]+\.?\s*/, "").trim();
+}
 
-function parseCaption(fullText: string): {
-  name: string;
-  date: string;
-  location: string;
-} {
-  const raw = fullText.replace(/@\w+/g, "").trim();
-  const lines = raw.split(/\n/).map((l) => l.trim()).filter(Boolean);
+/**
+ * Extract all names from a caption (handles multi-person entries).
+ * e.g. "۸۲ و ۸۳. منصوره حیدری و بهروز منصوری" → ["منصوره حیدری", "بهروز منصوری"]
+ * e.g. "۲۰۵. امیر تیموری راد\n۲۰۶. امید تیموری راد" → ["امیر تیموری راد", "امید تیموری راد"]
+ */
+export function extractAllNames(caption: string): string[] {
+  const lines = caption.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return [];
 
-  let name = "";
-  let date = "";
-  let location = "";
+  const names: string[] = [];
 
   for (const line of lines) {
-    const withoutNumber = line.replace(/^[۰-۹0-9]+\.\s*/, "").trim();
-    const dateMatch = line.match(DATE_REGEX);
-    const dateStr = dateMatch?.[1];
-    if (dateStr) {
-      date = dateStr.trim();
-      const rest = line.slice(line.indexOf(dateStr) + dateStr.length).trim();
-      if (rest) location = rest;
-      break;
+    // Strip leading "N." or "N و M." or just "N " (handles missing dot)
+    const afterNumbers = line.replace(/^[۰-۹0-9\sو\.]+/, "").trim();
+    if (!afterNumbers) continue;
+
+    // If contains " و " (and), split into multiple names
+    if (afterNumbers.includes(" و ")) {
+      const parts = afterNumbers.split(/\s+و\s+/).map((s) => s.trim()).filter(Boolean);
+      names.push(...parts);
+    } else {
+      names.push(afterNumbers);
     }
-    if (withoutNumber && !name) name = withoutNumber;
   }
 
-  const firstLine = lines[0];
-  if (!name && firstLine !== undefined) {
-    name = firstLine.replace(/^[۰-۹0-9]+\.\s*/, "").trim();
-  }
-
-  return { name, date, location };
+  // Dedupe while preserving order
+  const seen = new Set<string>();
+  return names.filter((n) => {
+    if (seen.has(n)) return false;
+    seen.add(n);
+    return true;
+  });
 }
 
 interface ExportMessage {
@@ -131,8 +127,9 @@ export async function importData(jsonPath: string = RESULT_JSON): Promise<{
       existing++;
       continue;
     }
-    const fullText = extractPlainText(msg.text);
-    const { name, date, location } = parseCaption(fullText);
+    const caption = extractPlainText(msg.text).replace(/@\w+/g, "").trim();
+    const allNames = extractAllNames(caption);
+    const name = allNames[0] ?? extractName(caption);
     if (!name) {
       skipped++;
       continue;
@@ -140,22 +137,18 @@ export async function importData(jsonPath: string = RESULT_JSON): Promise<{
     const record: VictimRecord = {
       messageId: msg.id,
       name,
-      normalizedName: normalize(name),
-      date,
-      location,
-      normalizedLocation: normalize(location),
+      caption,
       photoPath: msg.photo,
-      originalText: fullText,
       createdAt: new Date(),
     };
     try {
       await coll.insertOne(record);
       imported++;
+      const nameForSearch = allNames.length > 0 ? allNames.join(" ") : name;
       meiliDocs.push({
         messageId: record.messageId,
-        name: normalizeForSearch(name),
-        location: normalizeForSearch(location),
-        date,
+        name: normalizeForSearch(nameForSearch),
+        caption: normalizeForSearch(caption),
       });
     } catch {
       skipped++;
@@ -171,6 +164,35 @@ export async function importData(jsonPath: string = RESULT_JSON): Promise<{
   }
 
   return { imported, skipped, existing };
+}
+
+/**
+ * Sync all MongoDB records to Meilisearch.
+ * Used when Meilisearch is reset/empty but MongoDB has data.
+ */
+export async function syncToMeilisearch(): Promise<number> {
+  const db = await connectDb();
+  const coll = db.collection<VictimRecord>("victims");
+  const docs = await coll.find({}).toArray();
+  if (docs.length === 0) return 0;
+
+  await ensureMeiliIndex();
+  const meiliDocs: MeiliVictimDoc[] = docs.map((doc) => {
+    const allNames = extractAllNames(doc.caption);
+    const nameForSearch = allNames.length > 0 ? allNames.join(" ") : doc.name;
+    return {
+      messageId: doc.messageId,
+      name: normalizeForSearch(nameForSearch),
+      caption: normalizeForSearch(doc.caption),
+    };
+  });
+
+  const BATCH = 1000;
+  for (let i = 0; i < meiliDocs.length; i += BATCH) {
+    await indexVictims(meiliDocs.slice(i, i + BATCH));
+  }
+
+  return docs.length;
 }
 
 if (import.meta.main) {

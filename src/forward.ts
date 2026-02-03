@@ -2,55 +2,13 @@ import { join } from "path";
 import { mkdirSync, writeFileSync } from "fs";
 import { connectDb } from "./db";
 import { ensureMeiliIndex, indexVictim } from "./meili";
-import { normalize, normalizeForSearch } from "./normalizer";
+import { normalizeForSearch } from "./normalizer";
 import type { VictimRecord } from "./importer";
+import { extractName, extractAllNames } from "./importer";
 import type { Api } from "grammy";
 
-const DATA_DIR = join(import.meta.dir, "..", "data");
-const PHOTOS_DIR = join(DATA_DIR, "photos");
+const PHOTOS_DIR = join(import.meta.dir, "..", "data", "photos");
 const FORWARD_OFFSET = 1_000_000;
-
-const PERSIAN_MONTHS =
-  "فروردین|اردیبهشت|خرداد|تیر|مرداد|شهریور|مهر|آبان|آذر|دی|بهمن|اسفند";
-const DATE_REGEX = new RegExp(
-  `([۰-۹0-9]+\\s+${PERSIAN_MONTHS}\\s+[۰-۹0-9]+)`,
-  "u"
-);
-
-/** Same logic as importer parseCaption: handles extra lines (@mention, blanks), finds date line and name. */
-export function parseForwardCaption(caption: string): {
-  name: string;
-  date: string;
-  location: string;
-} | null {
-  const raw = caption.replace(/@\w+/g, "").trim();
-  const lines = raw.split(/\n/).map((l) => l.trim()).filter(Boolean);
-
-  let name = "";
-  let date = "";
-  let location = "";
-
-  for (const line of lines) {
-    const withoutNumber = line.replace(/^[۰-۹0-9]+\.\s*/, "").trim();
-    const dateMatch = line.match(DATE_REGEX);
-    const dateStr = dateMatch?.[1];
-    if (dateStr) {
-      date = dateStr.trim();
-      const rest = line.slice(line.indexOf(dateStr) + dateStr.length).trim();
-      if (rest) location = rest;
-      break;
-    }
-    if (withoutNumber && !name) name = withoutNumber;
-  }
-
-  const firstLine = lines[0];
-  if (!name && firstLine !== undefined) {
-    name = firstLine.replace(/^[۰-۹0-9]+\.\s*/, "").trim();
-  }
-
-  if (!name || !date) return null;
-  return { name, date, location };
-}
 
 export function getForwardMessageId(
   forwardOrigin: { type: string; message_id?: number } | undefined,
@@ -104,31 +62,29 @@ export async function upsertForwardedVictim(record: VictimRecord): Promise<void>
     { upsert: true }
   );
   await ensureMeiliIndex();
+  const allNames = extractAllNames(record.caption);
+  const nameForSearch = allNames.length > 0 ? allNames.join(" ") : record.name;
   await indexVictim({
     messageId: record.messageId,
-    name: normalizeForSearch(record.name),
-    location: normalizeForSearch(record.location),
-    date: record.date,
+    name: normalizeForSearch(nameForSearch),
+    caption: normalizeForSearch(record.caption),
   });
 }
 
 export function buildVictimRecord(
   messageId: number,
-  name: string,
-  date: string,
-  location: string,
-  photoPath: string,
-  originalText: string
+  caption: string,
+  photoPath: string
 ): VictimRecord {
+  const raw = caption.replace(/@\w+/g, "").trim();
+  const allNames = extractAllNames(raw);
+  const name = allNames[0] ?? extractName(raw);
+  if (!name) throw new Error("Caption has no name");
   return {
     messageId,
     name,
-    normalizedName: normalize(name),
-    date,
-    location,
-    normalizedLocation: normalize(location),
+    caption: raw,
     photoPath,
-    originalText,
     createdAt: new Date(),
   };
 }
